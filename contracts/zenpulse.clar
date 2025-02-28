@@ -4,6 +4,8 @@
 (define-constant contract-owner tx-sender)
 (define-constant err-not-found (err u404))
 (define-constant err-unauthorized (err u401))
+(define-constant err-invalid-input (err u400))
+(define-constant err-duplicate-profile (err u409))
 
 ;; Data Variables
 (define-map user-profiles
@@ -13,7 +15,8 @@
     total-sessions: uint,
     total-minutes: uint,
     streak: uint,
-    last-session: uint
+    last-session: uint,
+    last-session-date: uint
   }
 )
 
@@ -24,7 +27,8 @@
     duration: uint,
     mood-before: (string-utf8 20),
     mood-after: (string-utf8 20),
-    timestamp: uint
+    timestamp: uint,
+    date: uint
   }
 )
 
@@ -32,13 +36,17 @@
 
 ;; Public Functions
 (define-public (create-profile (name (string-utf8 50)))
-  (ok (map-set user-profiles tx-sender {
-    name: name,
-    total-sessions: u0,
-    total-minutes: u0,
-    streak: u0,
-    last-session: u0
-  }))
+  (if (is-some (map-get? user-profiles tx-sender))
+    err-duplicate-profile
+    (ok (map-set user-profiles tx-sender {
+      name: name,
+      total-sessions: u0,
+      total-minutes: u0,
+      streak: u0,
+      last-session: u0,
+      last-session-date: u0
+    }))
+  )
 )
 
 (define-public (log-session (duration uint) (mood-before (string-utf8 20)) (mood-after (string-utf8 20)))
@@ -46,30 +54,35 @@
     (
       (session-id (+ (var-get session-counter) u1))
       (current-time block-height)
+      (current-date (/ current-time u144))  ;; Convert blocks to days
     )
-    (begin
-      (var-set session-counter session-id)
-      (map-set meditation-sessions session-id {
-        user: tx-sender,
-        duration: duration,
-        mood-before: mood-before,
-        mood-after: mood-after,
-        timestamp: current-time
-      })
-      (update-user-stats duration current-time)
-      (ok session-id)
+    (if (< duration u1)
+      err-invalid-input
+      (begin
+        (var-set session-counter session-id)
+        (map-set meditation-sessions session-id {
+          user: tx-sender,
+          duration: duration,
+          mood-before: mood-before,
+          mood-after: mood-after,
+          timestamp: current-time,
+          date: current-date
+        })
+        (update-user-stats duration current-time current-date)
+        (ok session-id)
+      )
     )
   )
 )
 
 ;; Private Functions
-(define-private (update-user-stats (duration uint) (timestamp uint))
+(define-private (update-user-stats (duration uint) (timestamp uint) (current-date uint))
   (let
     (
       (user-data (unwrap! (map-get? user-profiles tx-sender) err-not-found))
       (new-total-sessions (+ (get total-sessions user-data) u1))
       (new-total-minutes (+ (get total-minutes user-data) duration))
-      (new-streak (calculate-streak (get last-session user-data) timestamp (get streak user-data)))
+      (new-streak (calculate-streak (get last-session-date user-data) current-date (get streak user-data)))
     )
     (ok (map-set user-profiles tx-sender
       {
@@ -77,14 +90,15 @@
         total-sessions: new-total-sessions,
         total-minutes: new-total-minutes,
         streak: new-streak,
-        last-session: timestamp
+        last-session: timestamp,
+        last-session-date: current-date
       }
     ))
   )
 )
 
-(define-private (calculate-streak (last-session uint) (current-time uint) (current-streak uint))
-  (if (is-consecutive last-session current-time)
+(define-private (calculate-streak (last-date uint) (current-date uint) (current-streak uint))
+  (if (is-consecutive-day last-date current-date)
     (+ current-streak u1)
     u1
   )
@@ -99,6 +113,9 @@
   (map-get? meditation-sessions session-id)
 )
 
-(define-read-only (is-consecutive (last-session uint) (current-time uint))
-  (< (- current-time last-session) u144)
+(define-read-only (is-consecutive-day (last-date uint) (current-date uint))
+  (or
+    (is-eq last-date u0)
+    (is-eq (- current-date last-date) u1)
+  )
 )
