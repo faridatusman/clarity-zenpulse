@@ -6,6 +6,7 @@
 (define-constant err-unauthorized (err u401))
 (define-constant err-invalid-input (err u400))
 (define-constant err-duplicate-profile (err u409))
+(define-constant max-session-duration u180) ;; Maximum 3 hours
 
 ;; Data Variables
 (define-map user-profiles
@@ -38,14 +39,17 @@
 (define-public (create-profile (name (string-utf8 50)))
   (if (is-some (map-get? user-profiles tx-sender))
     err-duplicate-profile
-    (ok (map-set user-profiles tx-sender {
-      name: name,
-      total-sessions: u0,
-      total-minutes: u0,
-      streak: u0,
-      last-session: u0,
-      last-session-date: u0
-    }))
+    (if (is-eq (len (unwrap-panic (string-utf8-to-ascii name))) u0)
+      err-invalid-input
+      (ok (map-set user-profiles tx-sender {
+        name: name,
+        total-sessions: u0,
+        total-minutes: u0,
+        streak: u0,
+        last-session: u0,
+        last-session-date: u0
+      }))
+    )
   )
 )
 
@@ -56,7 +60,12 @@
       (current-time block-height)
       (current-date (/ current-time u144))  ;; Convert blocks to days
     )
-    (if (< duration u1)
+    (if (or
+          (< duration u1)
+          (> duration max-session-duration)
+          (is-eq (len (unwrap-panic (string-utf8-to-ascii mood-before))) u0)
+          (is-eq (len (unwrap-panic (string-utf8-to-ascii mood-after))) u0)
+        )
       err-invalid-input
       (begin
         (var-set session-counter session-id)
@@ -114,8 +123,8 @@
 )
 
 (define-read-only (is-consecutive-day (last-date uint) (current-date uint))
-  (or
-    (is-eq last-date u0)
+  (and
+    (> last-date u0)
     (is-eq (- current-date last-date) u1)
   )
 )
